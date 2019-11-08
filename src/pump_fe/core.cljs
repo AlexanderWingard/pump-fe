@@ -1,7 +1,9 @@
 (ns ^:figwheel-hooks pump-fe.core
   (:require
    [goog.dom :as gdom]
-   [reagent.core :as reagent :refer [atom]]))
+   [reagent.core :as reagent :refer [atom]]
+   [cljsjs.semantic-ui :as sem]
+   ))
 
 (println "This text is printed from src/pump_fe/core.cljs. Go ahead and edit it and see reloading in action.")
 
