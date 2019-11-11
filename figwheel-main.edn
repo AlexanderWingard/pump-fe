@@ -2,7 +2,7 @@
 ;; these will be overriden by the metadata config options in dev.cljs.edn build file
 { 
  ;; Set the server port https://figwheel.org/config-options#ring-server-options
- ;; :ring-server-options {:port 9500}
+ :ring-server-options {:port 9600}
 
  ;; Target directory https://figwheel.org/config-options#target-dir
  ;; you may want to set this to resources if you are using Leiningen
