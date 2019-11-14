@@ -73,6 +73,38 @@
                nil)))
          (catch :default e nil))))
 
+(defn radio-group [items path]
+  (let [checked (get @state path)]
+    [:div.inline.fields
+     (for [{:keys [value label]} items
+           :let [id (str "radio-" value)]]
+       [:div.field
+        [:div.ui.radio.checkbox
+         [:input {:id id
+                  :type "radio"
+                  :name "pump-group"
+                  :value value
+                  :checked (= checked (str value))
+                  :on-click #(let [target (.-target %)]
+                               (when (.-checked target)
+                                 (swap! state assoc path (.-value target))))}]
+         [:label {:for id} label]]])]))
+
+(defn checkbox-group [items path]
+  (let [checked (get @state path)]
+    [:div.inline.fields
+     (for [{:keys [value label]} items
+           :let [id (str "chk-" value)]]
+       [:div.field
+        [:div.ui.checkbox
+         [:input {:id id
+                  :type "checkbox"
+                  :value value
+                  :checked (contains? checked (str value))
+                  :on-click #(let [target (.-target %)]
+                               (swap! state update path (fn [old] ((if (.-checked target) conj disj) (set old) (.-value target)))))}]
+         [:label {:for id} label]]])]))
+
 (defn dropdown [items path]
   (reagent/create-class
    {:component-did-mount (fn [this] (.dropdown (js/$ (reagent/dom-node this))))
@@ -91,24 +123,27 @@
 (defn hello-world []
   [:div.ui.container
    [:div.ui.segment.form
-    [:h2 "Pump Configuration"]
-    [:div.four.wide.field
-     [:label "Pump"]
-     [dropdown (for [p (:pumps @state) :let [id (:pump p)]] {:value id :label (str "Pump "id)}) :selected-pump]]
+    [:h4.ui.dividing.header "Configure Single Pump"]
+    [radio-group (for [p (:pumps @state) :let [id (:pump p)]] {:value id :label (str "Pump "id)}) :selected-pump]
     [:div.two.fields
      [:div.field
       [:label "Run Pump"]
-      [:div.ui.action.input
+      [:div.ui.labeled.action.input
+       [:div.ui.basic.label "Seconds:"]
        [text-field [:run-for]]
        [button "btn-run-for" #(send-edn "btn-run-for" (merge (parse-unit [:run-for]) {:msg "run_pump" :pump (:selected-pump @state)})) "Run Pump"]]]
      [:div.field
       [:label "Set Calibration"]
-      [:div.ui.action.input
+      [:div.ui.labeled.action.input
+       [:div.ui.basic.label "Millilitres:"]
        [text-field [:calibration]]
-       [button "btn-calibration" #(send-edn "btn-calibration" (merge (parse-unit [:calibration]) (parse-unit [:run-for]) {:msg "set_cal" :pump (:selected-pump @state)})) "Calibrate Pump"]]]]]
-   [button "btn-get-state" #(send-edn "btn-get-state" {:msg "get_state"}) "Get State"]
-   [button "btn-get-time" #(send-edn "btn-get-time"{:msg "get_time"}) "Get Time"]
-   ])
+       [button "btn-calibration" #(send-edn "btn-calibration" (merge (parse-unit [:calibration]) (parse-unit [:run-for]) {:msg "set_cal" :pump (:selected-pump @state)})) "Calibrate Pump"]]]]
+    [:h4.ui.dividing.header "Configure Multiple Pumps"]
+    [checkbox-group (for [p (:pumps @state) :let [id (:pump p)]] {:value id :label (str "Pump "id)}) :selected-pumps]
+    [:h4.ui.dividing.header "Other"]
+    [button "btn-get-state" #(send-edn "btn-get-state" {:msg "get_state"}) "Get State"]
+    [button "btn-get-time" #(send-edn "btn-get-time"{:msg "get_time"}) "Get Time"]
+    ]])
 
 (defn mount [el]
   (reagent/render-component [hello-world] el))
@@ -145,7 +180,7 @@
 
 (defn ws-close [])
 
-(defonce ws (ws/new "ws://localhost:8080/ws"
+(defonce ws (ws/new "ws://bcws.axw.se/ws"
                     #((var ws-receive) %)
                     #((var ws-open))
                     #((var ws-close))))
