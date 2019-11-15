@@ -30,80 +30,78 @@
   (gdom/getElement "app"))
 
 (defn check-timeouts []
-  (let [now (js/performance.now)
-        path [s/ALL (s/selected? [s/LAST :sent (s/pred (fn [sent] (>= (- now sent) 5000)))])]]
-    (swap! timedout #(apply conj % (s/select [path s/LAST :elem] @requests)))
-    (swap! requests #(s/setval path s/NONE %))))
+  (let [now (js/performance.now)]
+    (swap! state (fn [state]
+                   (s/transform [:requests s/MAP-VALS
+                                 (s/selected? [:msg (s/pred= "pending")])
+                                 (s/selected? [:sent (s/pred (fn [sent] (>= (- now sent) 5000)))])]
+                                #(merge % {:msg "error" :error "Request timed out"})
+                                state)))))
 
-(defn send-edn [timeout-id data]
-  (let [uuid (str (random-uuid))]
-    (swap! timedout disj timeout-id)
-    (swap! requests assoc uuid {:sent (js/performance.now) :elem timeout-id})
-    (->> (assoc data :id uuid)
-         (clj->js)
-         (js/JSON.stringify)
-         (ws/send ws)))
-  (js/setTimeout check-timeouts 5000))
-
-(defn has-pending-requests [id]
-  (not-empty(s/select [s/MAP-VALS (s/selected? :elem (s/pred= id))] @requests)))
-
-(defn button [id fun label]
-  [:div.ui.button {:id id
-                   :class (string/join " " [(when (has-pending-requests id) "disabled loading")
-                                            (when (contains? @timedout id) "red")])
-                   :on-click fun}
-   label])
+(defonce timeout-checker (js/setInterval #((var check-timeouts)) 1000))
 
 (defn text-field [path]
   [:input {:type "text"
            :value (get-in @state path)
            :on-change #(swap! state assoc-in path (-> % .-target .-value))}])
 
-(defn parse-unit [path]
-  (when-let [matches (re-matches #"([\d\.]+)\s*(\w*)" (string/trim(str(get-in @state path))))]
-    (try (let [[_ value unit] matches
-               number (edn/read-string value)]
-           (when (number? number)
-             (case unit
-               "ml" {:ml number}
-               "us" {:us number}
-               "s" {:us (* 1000000 number)}
-               "" {:us  (* 1000000 number)}
-               nil)))
-         (catch :default e nil))))
+(defn parse-unit [s default]
+  (merge {:unit default :value s}
+         (when-let [matches (re-matches #"([\d\.]+)\s*(\w*)" (string/trim s))]
+           (try (let [[_ value unit] matches
+                      number (edn/read-string value)]
+                  (when (number? number)
+                    (let [unit (if (= "" unit) default unit)]
+                      (merge {:unit unit}
+                             (case unit
+                               "ml" {:ml number}
+                               "us" {:us number}
+                               "s" {:us (* 1000000 number)})))))
+                (catch :default e nil)))))
+
+(defn unit-field [label default-unit path]
+  [:div.field
+   [:label label]
+   (let [s (get-in @state path)]
+     [:div.ui.big.right.labeled.input
+      [:input {:type "text"
+               :value (:value s)
+               :on-change #(swap! state assoc-in path (parse-unit (-> % .-target .-value) default-unit))}]
+      [:div.ui.basic.label (or (:unit s) default-unit)]])])
 
 (defn radio-group [items path]
-  (let [checked (get @state path)]
+  (let [checked (get-in @state path)
+        group-name (name (last path))]
     [:div.inline.fields
      (for [{:keys [value label]} items
-           :let [id (str "radio-" value)]]
+           :let [id (str group-name "-" value)]]
+       ^{:key id}
        [:div.field
         [:div.ui.radio.checkbox
          [:input {:id id
                   :type "radio"
-                  :name "pump-group"
+                  :name group-name
                   :value value
                   :checked (= checked (str value))
                   :on-click #(let [target (.-target %)]
                                (when (.-checked target)
-                                 (swap! state assoc path (.-value target))))}]
-         [:label {:for id} label]]])]))
+                                 (swap! state assoc-in path (.-value target))))}]
+         [:label {:style {:cursor "pointer" :font-size "16px"} :for id} label]]])]))
 
 (defn checkbox-group [items path]
-  (let [checked (get @state path)]
+  (let [checked (get-in @state path)]
     [:div.inline.fields
      (for [{:keys [value label]} items
            :let [id (str "chk-" value)]]
-       [:div.field
+       ^{:key id}[:div.field
         [:div.ui.checkbox
          [:input {:id id
                   :type "checkbox"
                   :value value
                   :checked (contains? checked (str value))
                   :on-click #(let [target (.-target %)]
-                               (swap! state update path (fn [old] ((if (.-checked target) conj disj) (set old) (.-value target)))))}]
-         [:label {:for id} label]]])]))
+                               (swap! state update-in path (fn [old] ((if (.-checked target) conj disj) (set old) (.-value target)))))}]
+         [:label {:style {:cursor "pointer" :font-size "16px"} :for id} label]]])]))
 
 (defn dropdown [items path]
   (reagent/create-class
@@ -120,61 +118,152 @@
                        (for [{:keys [value label]} items]
                          [:option {:value value} label])])}))
 
-(defn hello-world []
+(defn pump-menu-items []
+  (for [p (:pumps @state) :let [id (:pump p)]] {:value id :label (str "Pump "id)}))
+
+(defn send [data]
+  (let [uuid (str (random-uuid))]
+    (->> (assoc data :id uuid)
+         (clj->js)
+         (js/JSON.stringify)
+         (ws/send ws))
+    uuid))
+
+(defn action-button [path label extractor cb]
+  (let [{:keys [msg error]} (get-in @state path)]
+    [:<>
+     [:button.ui.button {:on-click #(swap! state assoc-in path {:id (send (extractor @state))
+                                                                :msg "pending"
+                                                                :sent (js/performance.now)
+                                                                :cb cb})
+                         :class (case msg
+                                  "pending" "disabled loading"
+                                  "error" "red"
+                                  "ok" "green"
+                                  "")}
+      label]
+     (when (= msg "error")
+       [:div.ui.left.pointing.red.basic.label error])]))
+
+(defn run-pump-button []
+  (action-button
+   [:requests :run-pump-button]
+   "Run Pump"
+   (fn [state] (merge {:msg "run_pump"
+                       :pump (:selected-pump state)}
+                      (select-keys (:run-for state) [:us :ml])))
+   nil))
+
+(defn set-cal-button []
+  (action-button
+   [:requests :set-cal-button]
+   "Set Calibration"
+   (fn [state] (merge {:msg "set_cal"
+                       :pump (:selected-pump state)}
+                      (select-keys (:cal-amount state) [:us :ml])
+                      (select-keys (:run-for state) [:us :ml])))
+   nil))
+
+(defn save-schedule-button []
+  (action-button
+   [:requests :save-schedule-button]
+   "Save Schedule"
+   (fn [state] {:pumps (:selected-pumps state)
+                :schedule (map edn/read-string (vals (into (sorted-map) (:schedule-field state))))})
+   nil))
+
+(defn load-state-button []
+  (action-button
+   [:requests :load-state-button]
+   "Load State"
+   (fn [state] {:msg "get_state"})
+   (fn [data]
+     (swap! state (fn [state] (-> state
+                                  (merge (dissoc data :ack))
+                                  (assoc-in [:requests :load-state-button] {:msg "ok"})))))))
+
+(defn load-schedule-button []
+  (action-button
+   [:requests :load-schedule-button]
+   "Load Schedule"
+   (fn [state] {:msg "get_state"})
+   (fn [data]
+     (when (some? (:pumps data))
+       (let [schedules (s/select [:pumps s/ALL (s/selected? [:pump #(contains? (:selected-pumps @state) (str %))])
+                                  :schedule] data)]
+         (cond (empty? schedules)
+               (swap! state assoc-in [:requests :load-schedule-button] {:msg "error" :error "No pumps selected"})
+
+               (not (apply = schedules))
+               (swap! state assoc-in [:requests :load-schedule-button] {:msg "error" :error "Schedules not equal"})
+
+               (not (= 24 (count (first schedules))))
+               (swap! state assoc-in [:requests :load-schedule-button] {:msg "error" :error "Incomplete schedule"})
+
+               :else
+               (swap! state (fn [state]
+                              (-> state
+                                  ( assoc-in [:requests :load-schedule-button] {:msg "ok"} )
+                                  ( assoc :schedule-field (apply merge (map-indexed hash-map (map str (first schedules))))))))))))))
+
+(defn schedule-form []
+  [:div.ui.stackable.four.column.grid {:style {:margin-bottom "1em" :margin-top "1em"}}
+   (for [c-1 (range 8)]
+     ^{:key c-1}[:div.column
+      [:div.ui.three.column.grid
+       (for [n (range 3)
+             :let [ix (+ n (* c-1 3))]]
+         ^{:key ix}[:div.column
+          [:div.inline.field
+           [:label (str ix ":")]
+           [:div.ui.big.fluid.input
+            [text-field [:schedule-field ix]]]]])]])])
+
+(defn main-page []
   [:div.ui.container
+   [:div.ui.segment
+    [:button.ui.button {:on-click example} "Load Standard"]
+    [:button.ui.button {:on-click #(reset! state nil)} "Load empty"]]
    [:div.ui.segment.form
-    [:h4.ui.dividing.header "Configure Single Pump"]
-    [radio-group (for [p (:pumps @state) :let [id (:pump p)]] {:value id :label (str "Pump "id)}) :selected-pump]
-    [:div.two.fields
-     [:div.field
-      [:label "Run Pump"]
-      [:div.ui.labeled.action.input
-       [:div.ui.basic.label "Seconds:"]
-       [text-field [:run-for]]
-       [button "btn-run-for" #(send-edn "btn-run-for" (merge (parse-unit [:run-for]) {:msg "run_pump" :pump (:selected-pump @state)})) "Run Pump"]]]
-     [:div.field
-      [:label "Set Calibration"]
-      [:div.ui.labeled.action.input
-       [:div.ui.basic.label "Millilitres:"]
-       [text-field [:calibration]]
-       [button "btn-calibration" #(send-edn "btn-calibration" (merge (parse-unit [:calibration]) (parse-unit [:run-for]) {:msg "set_cal" :pump (:selected-pump @state)})) "Calibrate Pump"]]]]
-    [:h4.ui.dividing.header "Configure Multiple Pumps"]
-    [checkbox-group (for [p (:pumps @state) :let [id (:pump p)]] {:value id :label (str "Pump "id)}) :selected-pumps]
-    [:h4.ui.dividing.header "Other"]
-    [button "btn-get-state" #(send-edn "btn-get-state" {:msg "get_state"}) "Get State"]
-    [button "btn-get-time" #(send-edn "btn-get-time"{:msg "get_time"}) "Get Time"]
-    ]])
+    [load-state-button]
+    (when (> (count (:pumps @state)) 0)
+      [:<>
+       [:h2.ui.dividing.header "Configure Single Pump"]
+       [radio-group (pump-menu-items) [:selected-pump]]
+       [:h3.ui.dividing.header "Run Pump"]
+       [unit-field "Amount:" "s" [:run-for]]
+       [run-pump-button]
+       [:h3.ui.dividing.header "Calibrate Pump"]
+       [unit-field "Amount:" "ml" [:cal-amount]]
+       [set-cal-button]
+       [:h2.ui.dividing.header "Configure Multiple Pumps"]
+       [checkbox-group (pump-menu-items) [:selected-pumps]]
+       [load-schedule-button]
+       [schedule-form]
+       [save-schedule-button]])]])
 
 (defn mount [el]
-  (reagent/render-component [hello-world] el))
+  (reagent/render-component [main-page] el))
 
 (defn mount-app-element []
   (when-let [el (get-app-element)]
     (mount el)))
 
-;; conditionally start your application based on the presence of an "app" element
-;; this is particularly helpful for testing this ns without launching the app
 (mount-app-element)
 
-;; specify reload hook with ^;after-load metadata
 (defn ^:after-load on-reload []
-  (mount-app-element)
-  ;; optionally touch your app-state to force rerendering depending on
-  ;; your application
-  ;; (swap! app-state update-in [:__figwheel_counter] inc)
-)
+  (mount-app-element))
 
 (defn ws-receive [s]
   (let [data (-> s
                  (js/JSON.parse)
                  (js->clj :keywordize-keys true))
-        ack (:ack data)]
+        ack (:ack data)
+        req-path [:requests s/MAP-VALS (s/selected? [:id (s/pred= ack)])]]
+    (doseq [cb (s/select [req-path :cb some?] @state)]
+      (cb data))
     (when (some? ack)
-      (when (= (:msg data) "error")
-        (when-let [elem (get-in @requests [ack :elem])]
-          (swap! timedout conj elem)))
-      (swap! requests dissoc ack))
-    (swap! state #(-> % (merge data)))))
+      (swap! state (fn [state] (s/setval req-path data state))))))
 
 (defn ws-open [])
 
