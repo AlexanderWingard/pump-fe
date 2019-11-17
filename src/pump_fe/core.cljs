@@ -7,7 +7,6 @@
    [com.rpl.specter :as s]
    [clojure.edn :as edn]
    [clojure.string :as string]
-   [clojure.pprint :as pprint]
    ))
 
 (declare ws)
@@ -15,8 +14,6 @@
 (defn multiply [a b] (* a b))
 
 (defonce state (atom {}))
-(defonce requests (atom {}))
-(defonce timedout (atom #{}))
 
 (defn example []
   (reset! state
@@ -39,6 +36,19 @@
                                 state)))))
 
 (defonce timeout-checker (js/setInterval #((var check-timeouts)) 1000))
+
+(defn animate []
+  (swap! state (fn [state]
+                 (s/transform [:running s/MAP-VALS]
+                              (fn [{:keys [start us] :as x}]
+                                (let [now (js/performance.now)
+                                      duration (- now start)
+                                      total (/ us 1000)]
+                                  (if (> duration total)
+                                    s/NONE
+                                    (assoc x :percent (/ duration total)))))
+                              state))))
+(defonce animation-timer (js/setInterval #((var animate)) 100))
 
 (defn text-field [path]
   [:input {:type "text"
@@ -117,6 +127,30 @@
                        {:on-change #(swap! state assoc path (-> % .-target .-value))}
                        (for [{:keys [value label]} items]
                          [:option {:value value} label])])}))
+
+(defn progress [id]
+  (reagent/create-class
+   {:component-did-mount (fn [this] (.progress (js/$ (reagent/dom-node this))))
+    :component-did-update (fn [this]
+                            (let [jq (js/$ (reagent/dom-node this))]
+                              (if-let [p (get-in @state [:running id :percent])]
+                                (.progress jq
+                                           #js{:percent (* 100 p)
+                                               })
+                                (.progress jq "reset"))))
+    :reagent-render
+    (fn []
+      @state
+      [:div.ui.indicating.progress
+       [:div.bar
+        [:div.progress]]])}))
+
+(defn pump-progresses [items]
+  [:<>
+   (for [{:keys [value label]} items]
+     ^{:key value}[:div
+                   [:label label ":"]
+                   [progress value]]) ])
 
 (defn pump-menu-items []
   (for [p (:pumps @state) :let [id (:pump p)]] {:value id :label (str "Pump "id)}))
@@ -228,6 +262,7 @@
     [load-state-button]
     (when (> (count (:pumps @state)) 0)
       [:<>
+       [pump-progresses (pump-menu-items)]
        [:h2.ui.dividing.header "Configure Single Pump"]
        [radio-group (pump-menu-items) [:selected-pump]]
        [:h3.ui.dividing.header "Run Pump"]
@@ -254,6 +289,13 @@
 (defn ^:after-load on-reload []
   (mount-app-element))
 
+(defn react-to [data]
+  (case (:msg data)
+    "info"
+    (swap! state assoc-in [:running (:pump data)] {:start (js/performance.now) :us (:us data)})
+
+    nil))
+
 (defn ws-receive [s]
   (let [data (-> s
                  (js/JSON.parse)
@@ -262,6 +304,7 @@
         req-path [:requests s/MAP-VALS (s/selected? [:id (s/pred= ack)])]]
     (doseq [cb (s/select [req-path :cb some?] @state)]
       (cb data))
+    (react-to data)
     (when (some? ack)
       (swap! state (fn [state] (s/setval req-path data state))))))
 
