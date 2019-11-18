@@ -314,6 +314,13 @@
 (defn ^:after-load on-reload []
   (mount-app-element))
 
+(defn start-timers-for-runnig [state data]
+  (update state :running merge
+          (reduce (fn [m {:keys [pump running us]}]
+                    (assoc m pump {:start (- (js/performance.now) (/ running 1000)) :us us}))
+                  {}
+                  (s/select [:pumps s/ALL (s/selected? (s/must :us))] data))))
+
 (defn react-to [data]
   (cond
     (= (:msg data) "info")
@@ -321,6 +328,7 @@
 
     (some? (:pumps data))
     (swap! state #(-> %
+                      (start-timers-for-runnig data)
                       (merge (dissoc data :ack))
                       (assoc :spread (apply merge (map-indexed hash-map (map (fn [x] (str (:minute x))) (:pumps data)))))))))
 
