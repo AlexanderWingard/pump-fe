@@ -108,9 +108,9 @@
          [:input {:id id
                   :type "checkbox"
                   :value value
-                  :checked (contains? checked (str value))
+                  :checked (contains? checked value)
                   :on-click #(let [target (.-target %)]
-                               (swap! state update-in path (fn [old] ((if (.-checked target) conj disj) (set old) (.-value target)))))}]
+                               (swap! state update-in path (fn [old] ((if (.-checked target) conj disj) (set old) (edn/read-string (.-value target))))))}]
          [:label {:style {:cursor "pointer" :font-size "16px"} :for id} label]]])]))
 
 (defn dropdown [items path]
@@ -202,8 +202,17 @@
   (action-button
    [:requests :save-schedule-button]
    "Save Schedule"
-   (fn [state] {:pumps (:selected-pumps state)
+   (fn [state] {:msg "set_sched"
+                :pumps (:selected-pumps state)
                 :schedule (map edn/read-string (vals (into (sorted-map) (:schedule-field state))))})
+   nil))
+
+(defn save-minutes-button []
+  (action-button
+   [:requests :save-minutes-button]
+   "Save Minutes"
+   (fn [state] {:msg "set_spread"
+                :minutes (map edn/read-string (vals (into (sorted-map) (:spread state))))})
    nil))
 
 (defn load-state-button []
@@ -212,9 +221,7 @@
    "Load State"
    (fn [state] {:msg "get_state"})
    (fn [data]
-     (swap! state (fn [state] (-> state
-                                  (merge (dissoc data :ack))
-                                  (assoc-in [:requests :load-state-button] {:msg "ok"})))))))
+     (swap! state assoc-in [:requests :load-state-button] {:msg "ok"}))))
 
 (defn load-schedule-button []
   (action-button
@@ -223,7 +230,7 @@
    (fn [state] {:msg "get_state"})
    (fn [data]
      (when (some? (:pumps data))
-       (let [schedules (s/select [:pumps s/ALL (s/selected? [:pump #(contains? (:selected-pumps @state) (str %))])
+       (let [schedules (s/select [:pumps s/ALL (s/selected? [:pump #(contains? (:selected-pumps @state) %)])
                                   :schedule] data)]
          (cond (empty? schedules)
                (swap! state assoc-in [:requests :load-schedule-button] {:msg "error" :error "No pumps selected"})
@@ -253,13 +260,27 @@
            [:div.ui.big.fluid.input
             [text-field [:schedule-field ix]]]]])]])])
 
+(defn spread-form [items path]
+  [:div.ui.stackable.four.column.grid {:style {:margin-bottom "1em" :margin-top "1em"}}
+   (for [c-1 (range (Math.ceil (/ (count items) 3)))]
+     ^{:key c-1}[:div.column
+                 [:div.ui.three.column.grid
+                  (for [n (range 3)
+                        :let [ix (+ n (* c-1 3))]]
+                    (when (< ix 5)
+                      ^{:key ix}[:div.column
+                                 [:div.inline.field
+                                  [:label (str (:label (nth items ix)) ":")]
+                                  [:div.ui.big.fluid.input
+                                   [text-field (conj path ix)]]]]))]])])
+
 (defn main-page []
   [:div.ui.container
    [:div.ui.segment
     [:button.ui.button {:on-click example} "Load Standard"]
-    [:button.ui.button {:on-click #(reset! state nil)} "Load empty"]]
+    [:button.ui.button {:on-click #(reset! state nil)} "Load empty"]
+    [load-state-button]]
    [:div.ui.segment.form
-    [load-state-button]
     (when (> (count (:pumps @state)) 0)
       [:<>
        [pump-progresses (pump-menu-items)]
@@ -272,6 +293,10 @@
        [unit-field "Amount:" "ml" [:cal-amount]]
        [set-cal-button]
        [:h2.ui.dividing.header "Configure Multiple Pumps"]
+       [:h3.ui.dividing.header "Dosing Minutes"]
+       [spread-form (pump-menu-items) [:spread]]
+       [save-minutes-button]
+       [:h3.ui.dividing.header "Dosing Schedule"]
        [checkbox-group (pump-menu-items) [:selected-pumps]]
        [load-schedule-button]
        [schedule-form]
@@ -290,11 +315,14 @@
   (mount-app-element))
 
 (defn react-to [data]
-  (case (:msg data)
-    "info"
+  (cond
+    (= (:msg data) "info")
     (swap! state assoc-in [:running (:pump data)] {:start (js/performance.now) :us (:us data)})
 
-    nil))
+    (some? (:pumps data))
+    (swap! state #(-> %
+                      (merge (dissoc data :ack))
+                      (assoc :spread (apply merge (map-indexed hash-map (map (fn [x] (str (:minute x))) (:pumps data)))))))))
 
 (defn ws-receive [s]
   (let [data (-> s
@@ -308,7 +336,8 @@
     (when (some? ack)
       (swap! state (fn [state] (s/setval req-path data state))))))
 
-(defn ws-open [])
+(defn ws-open []
+  (send {:msg "get_state"}))
 
 (defn ws-close [])
 
