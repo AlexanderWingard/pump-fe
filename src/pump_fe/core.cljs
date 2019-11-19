@@ -104,7 +104,7 @@
      (for [{:keys [value label]} items
            :let [id (str "chk-" value)]]
        ^{:key id}[:div.field
-        [:div.ui.checkbox
+                  [:div.ui.checkbox
          [:input {:id id
                   :type "checkbox"
                   :value value
@@ -186,7 +186,19 @@
    (fn [state] (merge {:msg "run_pump"
                        :pump (:selected-pump state)}
                       (select-keys (:run-for state) [:us :ml])))
-   nil))
+   (fn [data]
+     (when (= (:msg data) "info")
+       (swap! state assoc-in [:requests :run-pump-button] {:msg "ok"})))))
+
+(defn stop-pump-button []
+  (action-button
+   [:requests :stop-pump-button]
+   "Stop Pump"
+   (fn [state] (merge {:msg "stop_pump"
+                       :pump (:selected-pump state)}))
+   (fn [data]
+     (when (= (:msg data) "info")
+       (swap! state assoc-in [:requests :stop-pump-button] {:msg "ok"})))))
 
 (defn set-cal-button []
   (action-button
@@ -205,6 +217,15 @@
    (fn [state] {:msg "set_sched"
                 :pumps (:selected-pumps state)
                 :schedule (map edn/read-string (vals (into (sorted-map) (:schedule-field state))))})
+   nil))
+
+(defn disable-button []
+  (action-button
+   [:requests :disable-button]
+   "Disable Pumps"
+   (fn [state] {:msg "disable"
+                :pumps (:selected-pumps state)
+                :disable (edn/read-string (:disable state))})
    nil))
 
 (defn save-minutes-button []
@@ -260,6 +281,12 @@
            [:div.ui.big.fluid.input
             [text-field [:schedule-field ix]]]]])]])])
 
+(defn disable-form []
+  [:div.inline.field
+   [:label "Number of periods:"]
+   [:div.ui.big.fluid.input
+    [text-field [:disable]]]])
+
 (defn spread-form [items path]
   [:div.ui.stackable.four.column.grid {:style {:margin-bottom "1em" :margin-top "1em"}}
    (for [c-1 (range (Math.ceil (/ (count items) 3)))]
@@ -277,7 +304,6 @@
 (defn main-page []
   [:div.ui.container
    [:div.ui.segment
-    [:button.ui.button {:on-click example} "Load Standard"]
     [:button.ui.button {:on-click #(reset! state nil)} "Load empty"]
     [load-state-button]]
    [:div.ui.segment.form
@@ -289,18 +315,23 @@
        [:h3.ui.dividing.header "Run Pump"]
        [unit-field "Amount:" "s" [:run-for]]
        [run-pump-button]
+       [stop-pump-button]
        [:h3.ui.dividing.header "Calibrate Pump"]
        [unit-field "Amount:" "ml" [:cal-amount]]
        [set-cal-button]
        [:h2.ui.dividing.header "Configure Multiple Pumps"]
+       [checkbox-group (pump-menu-items) [:selected-pumps]]
+       [:h3.ui.dividing.header "Disable Pumps"]
+       [disable-form]
+       [disable-button]
+       [:h3.ui.dividing.header "Dosing Schedule"]
+       [load-schedule-button]
+       [schedule-form]
+       [save-schedule-button]
        [:h3.ui.dividing.header "Dosing Minutes"]
        [spread-form (pump-menu-items) [:spread]]
        [save-minutes-button]
-       [:h3.ui.dividing.header "Dosing Schedule"]
-       [checkbox-group (pump-menu-items) [:selected-pumps]]
-       [load-schedule-button]
-       [schedule-form]
-       [save-schedule-button]])]])
+       ])]])
 
 (defn mount [el]
   (reagent/render-component [main-page] el))
