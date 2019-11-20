@@ -139,18 +139,18 @@
                                                })
                                 (.progress jq "reset"))))
     :reagent-render
-    (fn []
+    (fn [id]
       @state
       [:div.ui.indicating.progress
-       [:div.bar
-        [:div.progress]]])}))
+       [:div.bar]])}))
 
-(defn pump-progresses [items]
+(defn pump-progresses [pumps]
   [:<>
-   (for [{:keys [value label]} items]
-     ^{:key value}[:div
-                   [:label label ":"]
-                   [progress value]]) ])
+   (for [p pumps]
+     ^{:key (:pump p)}
+     [:div
+      [:label "Pump " (:pump p) ":"]
+      [progress (:pump p)]])])
 
 (defn pump-menu-items []
   (for [p (:pumps @state) :let [id (:pump p)]] {:value id :label (str "Pump "id)}))
@@ -226,7 +226,8 @@
    (fn [state] {:msg "disable"
                 :pumps (:selected-pumps state)
                 :disable (edn/read-string (:disable state))})
-   nil))
+   (fn [data]
+     (send {:msg "get_state"}))))
 
 (defn save-minutes-button []
   (action-button
@@ -309,7 +310,7 @@
    [:div.ui.segment.form
     (when (> (count (:pumps @state)) 0)
       [:<>
-       [pump-progresses (pump-menu-items)]
+       [pump-progresses (:pumps @state)]
        [:h2.ui.dividing.header "Configure Single Pump"]
        [radio-group (pump-menu-items) [:selected-pump]]
        [:h3.ui.dividing.header "Run Pump"]
@@ -356,6 +357,9 @@
   (cond
     (= (:msg data) "info")
     (swap! state assoc-in [:running (:pump data)] {:start (js/performance.now) :us (:us data)})
+
+    (= (:msg data) "skipped")
+    (swap! state (fn [state] (s/setval [:pumps s/ALL (s/selected? [:pump (s/pred= (:pump data))]) :disabled] (:disabled data) state)))
 
     (some? (:pumps data))
     (swap! state #(-> %
