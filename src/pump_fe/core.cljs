@@ -134,10 +134,8 @@
     :component-did-update (fn [this]
                             (let [jq (js/$ (reagent/dom-node this))]
                               (if-let [p (get-in @state [:running id :percent])]
-                                (.progress jq
-                                           #js{:percent (* 100 p)
-                                               })
-                                (.progress jq "reset"))))
+                                (.progress jq #js{:percent (* 100 p)})
+                                (.progress jq #js{:percent 0}))))
     :reagent-render
     (fn [id]
       @state
@@ -149,7 +147,7 @@
    (for [p pumps]
      ^{:key (:pump p)}
      [:div
-      [:label "Pump " (:pump p) ":"]
+      [:label "Pump " (:pump p) " (" (:dosed p) "):"]
       [progress (:pump p)]])])
 
 (defn pump-menu-items []
@@ -187,7 +185,7 @@
                        :pump (:selected-pump state)}
                       (select-keys (:run-for state) [:us :ml])))
    (fn [data]
-     (when (= (:msg data) "info")
+     (when (= (:msg data) "pump_started")
        (swap! state assoc-in [:requests :run-pump-button] {:msg "ok"})))))
 
 (defn stop-pump-button []
@@ -197,7 +195,7 @@
    (fn [state] (merge {:msg "stop_pump"
                        :pump (:selected-pump state)}))
    (fn [data]
-     (when (= (:msg data) "info")
+     (when (= (:msg data) "pump_stopped")
        (swap! state assoc-in [:requests :stop-pump-button] {:msg "ok"})))))
 
 (defn set-cal-button []
@@ -310,6 +308,8 @@
    [:div.ui.segment.form
     (when (> (count (:pumps @state)) 0)
       [:<>
+       [:div (:boot @state)]
+       [:div (:last-heard @state)]
        [pump-progresses (:pumps @state)]
        [:h2.ui.dividing.header "Configure Single Pump"]
        [radio-group (pump-menu-items) [:selected-pump]]
@@ -354,9 +354,17 @@
                   (s/select [:pumps s/ALL (s/selected? (s/must :us))] data))))
 
 (defn react-to [data]
+  (swap! state assoc :last-heard (.toISOString(js/Date.)))
   (cond
-    (= (:msg data) "info")
-    (swap! state assoc-in [:running (:pump data)] {:start (js/performance.now) :us (:us data)})
+    (= (:msg data) "pump_started")
+    (do
+      (swap! state assoc-in [:running (:pump data)] {:start (js/performance.now) :us (:us data)})
+      (swap! state (fn [state] (s/setval [:pumps s/ALL (s/selected? [:pump (s/pred= (:pump data))]) :dosed] (:dosed data) state))))
+
+    (= (:msg data) "pump_stopped")
+    (do
+      (swap! state (fn [state] (s/setval [:running (:pump data)] s/NONE state)))
+      (swap! state (fn [state] (s/setval [:pumps s/ALL (s/selected? [:pump (s/pred= (:pump data))]) :dosed] (:dosed data) state))))
 
     (= (:msg data) "skipped")
     (swap! state (fn [state] (s/setval [:pumps s/ALL (s/selected? [:pump (s/pred= (:pump data))]) :disabled] (:disabled data) state)))
