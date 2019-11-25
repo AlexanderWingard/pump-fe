@@ -7,13 +7,14 @@
    [com.rpl.specter :as s]
    [clojure.edn :as edn]
    [clojure.string :as string]
+   [cljs.pprint :as pprint]
    ))
 
 (declare ws)
 
 (defn multiply [a b] (* a b))
 
-(defonce state (atom {}))
+(defonce state (atom {:alk-view "kh"}))
 
 (defn example []
   (reset! state
@@ -23,10 +24,14 @@
                    {:pump 4, :minute 36, :ml_per_us 0, :schedule [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]}
                    {:pump 5, :minute 48, :ml_per_us 0, :schedule [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]}]}))
 
+(defn two-decimals [n]
+  (pprint/cl-format nil  "~,2f" n))
+
 (defn get-app-element []
   (gdom/getElement "app"))
 
 (defn check-timeouts []
+  (swap! state assoc :last-heard-since (int (- (/ (js/Date.now ) 1000) (:last-heard @state))))
   (let [now (js/performance.now)]
     (swap! state (fn [state]
                    (s/transform [:requests s/MAP-VALS
@@ -147,7 +152,7 @@
    (for [p pumps]
      ^{:key (:pump p)}
      [:div
-      [:label "Pump " (:pump p) " (" (:dosed p) "):"]
+      [:label "Pump " (:pump p) " Speed: " (two-decimals(* 1000000(:ml_per_us p))) "ml/s  Dosed: " (two-decimals(:dosed p)) "ml" ]
       [progress (:pump p)]])])
 
 (defn pump-menu-items []
@@ -182,11 +187,22 @@
    [:requests :run-pump-button]
    "Run Pump"
    (fn [state] (merge {:msg "run_pump"
-                       :pump (:selected-pump state)}
+                       :pump (:selected-pump state)
+                       :nocount (boolean (:ignore-dosed-checkbox state))}
                       (select-keys (:run-for state) [:us :ml])))
    (fn [data]
      (when (= (:msg data) "pump_started")
        (swap! state assoc-in [:requests :run-pump-button] {:msg "ok"})))))
+
+(defn ignore-dosed-checkbox []
+  [:div.field
+   [:div.ui.checkbox
+    [:input {:id :ignore-dosed-checkbox
+             :type "checkbox"
+             :checked (:ignore-dosed-checkbox @state)
+             :on-click #(let [target (.-target %)]
+                          (swap! state assoc :ignore-dosed-checkbox (.-checked target)))}]
+    [:label {:style {:cursor "pointer" :font-size "16px"} :for :ignore-dosed-checkbox} "Dont Count"]]])
 
 (defn stop-pump-button []
   (action-button
@@ -227,6 +243,15 @@
    (fn [data]
      (send {:msg "get_state"}))))
 
+(defn reset-dosed-button []
+  (action-button
+   [:requests :reset-dosed-button]
+   "Reset Dose Counter"
+   (fn [state] {:msg "reset_dosed"
+                :pumps (:selected-pumps state)})
+   (fn [data]
+     (send {:msg "get_state"}))))
+
 (defn save-minutes-button []
   (action-button
    [:requests :save-minutes-button]
@@ -242,6 +267,13 @@
    (fn [state] {:msg "get_state"})
    (fn [data]
      (swap! state assoc-in [:requests :load-state-button] {:msg "ok"}))))
+
+(defn load-alk-button []
+  (action-button
+   [:requests :load-alk-button]
+   "Load Alk"
+   (fn [state] {:msg "get_alk"})
+   nil))
 
 (defn load-schedule-button []
   (action-button
@@ -300,28 +332,70 @@
                                   [:div.ui.big.fluid.input
                                    [text-field (conj path ix)]]]]))]])])
 
+(defn group-alk [data]
+  (into {} (for [[k v] (group-by #(get (string/split (:time %) #" ") 0) data)]
+             [k (group-by #(get (string/split (:time %) #" ") 1) v)])) )
+
+(defn alk-component []
+  [:div.ui.segment.form
+   [:h2.ui.header "Alkatronic"]
+   [radio-group [{:value "kh" :label "kH"}{:value "ph" :label "pH"}] [:alk-view]]
+   (when (count (:alk @state))
+     (let [g (:alk @state)
+           cols (keys(second(second g)))
+           key (case (:alk-view @state) "kh" :kh "ph" :ph nil)
+           diff (case (:alk-view @state) "kh" :kh-diff "ph" :ph-diff nil)]
+       [:table.ui.celled.unstackable.table
+        [:thead
+         [:tr
+          [:th "Date"]
+          (for [t cols]
+            ^{:key t}[:th (string/join (take 5 t))])]]
+        [:tbody
+         (for [[date row] g]
+           ^{:key date}
+           [:tr
+            [:td [:div date]
+             [:div  (two-decimals (let [nums (map #(get (first(last %)) key) row)]
+                                   (/(reduce + nums) (count nums))))]
+             [:div (two-decimals (reduce + (map #(get (first(last %)) diff) row)))]
+             ]
+            (for [c cols]
+              ^{:key c}[:td
+                        [:div(get (first(get row c)) key)]
+                        (when (some? (get (first(get row c)) key))
+                          [:div (two-decimals (get (first(get row c)) diff))])])])]]))])
+
 (defn main-page []
   [:div.ui.container
    [:div.ui.segment
     [:button.ui.button {:on-click #(reset! state nil)} "Load empty"]
-    [load-state-button]]
-   [:div.ui.segment.form
-    (when (> (count (:pumps @state)) 0)
-      [:<>
+    [load-state-button]
+    [load-alk-button]]
+   [alk-component]
+   (when (> (count (:pumps @state)) 0)
+     [:<>
+      [:div.ui.segment.form
+       [:h2.ui.header "Pump Info"]
        [:div (:boot @state)]
-       [:div (:last-heard @state)]
-       [pump-progresses (:pumps @state)]
-       [:h2.ui.dividing.header "Configure Single Pump"]
+       [:div (:last-heard-since @state)]
+       [pump-progresses (:pumps @state)]]
+      [:div.ui.segment.form
+       [:h2.ui.header "Configure Single Pump"]
        [radio-group (pump-menu-items) [:selected-pump]]
        [:h3.ui.dividing.header "Run Pump"]
        [unit-field "Amount:" "s" [:run-for]]
+       [ignore-dosed-checkbox]
        [run-pump-button]
        [stop-pump-button]
        [:h3.ui.dividing.header "Calibrate Pump"]
        [unit-field "Amount:" "ml" [:cal-amount]]
-       [set-cal-button]
-       [:h2.ui.dividing.header "Configure Multiple Pumps"]
+       [set-cal-button]]
+      [:div.ui.segment.form
+       [:h2.ui.header "Configure Multiple Pumps"]
        [checkbox-group (pump-menu-items) [:selected-pumps]]
+       [:h3.ui.dividing.header "Reset Dosed"]
+       [reset-dosed-button]
        [:h3.ui.dividing.header "Disable Pumps"]
        [disable-form]
        [disable-button]
@@ -331,8 +405,8 @@
        [save-schedule-button]
        [:h3.ui.dividing.header "Dosing Minutes"]
        [spread-form (pump-menu-items) [:spread]]
-       [save-minutes-button]
-       ])]])
+       [save-minutes-button]]
+      ])])
 
 (defn mount [el]
   (reagent/render-component [main-page] el))
@@ -353,8 +427,33 @@
                   {}
                   (s/select [:pumps s/ALL (s/selected? (s/must :us))] data))))
 
+(defn add-diffs [alk]
+  (map (fn [a b]
+         (if (some? b)
+           (-> a
+               (assoc :kh-diff (- (:kh a) (:kh b)))
+               (assoc :ph-diff (- (:ph a) (:ph b))))
+           a))
+       alk (cons nil alk)))
+
+
+(defn convert-dates [data]
+  (map (fn [entry] (update entry :time (fn [ts] (let [d (js/Date. (* ts 1000))]
+                                                  ;; (.setMinutes d (- (.getMinutes d) (.getTimezoneOffset d)))
+                                                  (str (.getFullYear d)
+                                                       "-"
+                                                       (+ 1 (.getMonth d))
+                                                       "-"
+                                                       (.getDate d)
+                                                       " "
+                                                       (pprint/cl-format nil  "~2,'0d" (.getHours d))
+                                                       ":"
+                                                       (pprint/cl-format nil  "~2,'0d" (.getMinutes d))
+                                                       ":"
+                                                       (pprint/cl-format nil  "~2,'0d" (.getSeconds d))))))) data))
+
 (defn react-to [data]
-  (swap! state assoc :last-heard (.toISOString(js/Date.)))
+  (swap! state merge {:last-heard-since 0 :last-heard (/ (js/Date.now) 1000)})
   (cond
     (= (:msg data) "pump_started")
     (do
@@ -368,6 +467,12 @@
 
     (= (:msg data) "skipped")
     (swap! state (fn [state] (s/setval [:pumps s/ALL (s/selected? [:pump (s/pred= (:pump data))]) :disabled] (:disabled data) state)))
+
+    (some? (:alk data))
+    (swap! state assoc :alk (-> (:alk data)
+                                (convert-dates)
+                                (add-diffs)
+                                (group-alk)))
 
     (some? (:pumps data))
     (swap! state #(-> %
@@ -388,6 +493,7 @@
       (swap! state (fn [state] (s/setval req-path data state))))))
 
 (defn ws-open []
+  (send {:msg "get_alk"})
   (send {:msg "get_state"}))
 
 (defn ws-close [])
