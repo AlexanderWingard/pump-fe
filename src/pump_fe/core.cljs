@@ -231,7 +231,8 @@
    (fn [state] {:msg "set_sched"
                 :pumps (:selected-pumps state)
                 :schedule (map edn/read-string (vals (into (sorted-map) (:schedule-field state))))})
-   nil))
+   (fn [data]
+     (swap! state assoc :loaded-schedule (map edn/read-string (vals (into (sorted-map) (:schedule-field @state))))))))
 
 (defn disable-button []
   (action-button
@@ -297,6 +298,7 @@
                (swap! state (fn [state]
                               (-> state
                                   ( assoc-in [:requests :load-schedule-button] {:msg "ok"} )
+                                  ( assoc :loaded-schedule (first schedules))
                                   ( assoc :schedule-field (apply merge (map-indexed hash-map (map str (first schedules))))))))))))))
 
 (defn schedule-form []
@@ -333,8 +335,24 @@
                                    [text-field (conj path ix)]]]]))]])])
 
 (defn group-alk [data]
-  (into {} (for [[k v] (group-by #(get (string/split (:time %) #" ") 0) data)]
-             [k (group-by #(get (string/split (:time %) #" ") 1) v)])) )
+  (into {} (for [[k v] (group-by #(select-keys (:time %) [:year :month :day]) data)]
+             [k (group-by #(select-keys (:time %) [:hour]) v)])) )
+
+(defn partition-loaded [split]
+  (-> (reduce (fn [acc [hr amt]]
+                (let [g (first (:groups acc))
+                      acc (if (and (some? g) (>= hr g))
+                            (do
+                              (-> acc
+                                  (update :res conj '())
+                                  (update :groups rest)))
+                            acc)]
+                  (update acc :res (fn [l]
+                                     (conj (rest l) (conj (first l) amt))))))
+              {:groups split :res '()}
+              (map-indexed vector (:loaded-schedule @state)))
+      (:res)
+      (reverse)))
 
 (defn alk-component []
   [:div.ui.segment.form
@@ -345,17 +363,17 @@
            cols (keys(second(second g)))
            key (case (:alk-view @state) "kh" :kh "ph" :ph nil)
            diff (case (:alk-view @state) "kh" :kh-diff "ph" :ph-diff nil)]
-       [:table.ui.celled.unstackable.table
+       [:table.ui.compact.celled.unstackable.table
         [:thead
          [:tr
           [:th "Date"]
           (for [t cols]
-            ^{:key t}[:th (string/join (take 5 t))])]]
+            ^{:key t}[:th (pprint/cl-format nil  "~2,'0d:00" (:hour t))])]]
         [:tbody
          (for [[date row] g]
            ^{:key date}
            [:tr
-            [:td [:div date]
+            [:td [:div [:strong(str (:month date) "-" (:day date))]]
              [:div  (two-decimals (let [nums (map #(get (first(last %)) key) row)]
                                    (/(reduce + nums) (count nums))))]
              [:div (two-decimals (reduce + (map #(get (first(last %)) diff) row)))]
@@ -364,7 +382,14 @@
               ^{:key c}[:td
                         [:div(get (first(get row c)) key)]
                         (when (some? (get (first(get row c)) key))
-                          [:div (two-decimals (get (first(get row c)) diff))])])])]]))])
+                          [:div (two-decimals (get (first(get row c)) diff))])])])
+         (when (some? (:loaded-schedule @state))
+           [:tr
+            [:td [:strong "Dose"]]
+            (for [h (partition-loaded (rest(map :hour cols)))]
+              [:td (reduce + h)])])]]))])
+
+
 
 (defn main-page []
   [:div.ui.container
@@ -440,17 +465,13 @@
 (defn convert-dates [data]
   (map (fn [entry] (update entry :time (fn [ts] (let [d (js/Date. (* ts 1000))]
                                                   ;; (.setMinutes d (- (.getMinutes d) (.getTimezoneOffset d)))
-                                                  (str (.getFullYear d)
-                                                       "-"
-                                                       (+ 1 (.getMonth d))
-                                                       "-"
-                                                       (.getDate d)
-                                                       " "
-                                                       (pprint/cl-format nil  "~2,'0d" (.getHours d))
-                                                       ":"
-                                                       (pprint/cl-format nil  "~2,'0d" (.getMinutes d))
-                                                       ":"
-                                                       (pprint/cl-format nil  "~2,'0d" (.getSeconds d))))))) data))
+                                                  {:year (.getFullYear d)
+                                                   :month (+ 1 (.getMonth d))
+                                                   :day (.getDate d)
+                                                   :hour (.getHours d)
+                                                   :minute (.getMinutes d)
+                                                   :seconds (.getSeconds d)}
+                                                  )))) data))
 
 (defn react-to [data]
   (swap! state merge {:last-heard-since 0 :last-heard (/ (js/Date.now) 1000)})
